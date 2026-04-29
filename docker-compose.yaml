@@ -1,0 +1,71 @@
+services:
+  mitnick:
+    build:
+      context: .
+      dockerfile: Dockerfile.mitnick
+    container_name: attacker
+    networks:
+      mitnick_net:
+        ipv4_address: 10.0.2.10
+    privileged: true # necessáriro para manipular pacotes ARP
+    tty: True
+    working_dir: /app
+    sysctls:
+      - net.ipv4.ip_forward=0
+
+
+  target:
+    build: .
+    container_name: target
+    networks:
+      mitnick_net:
+        ipv4_address: 10.0.2.20
+    command: |
+      bash -c "
+      echo '10.0.2.30 root' > /root/.rhosts
+      # Configuração RSH (Porta 514)
+      cat <<EOF > /etc/xinetd.d/rsh
+      service shell
+      {
+        disable = no
+        socket_type = stream
+        wait = no
+        user = root
+        server = /usr/sbin/in.rshd
+      }
+      EOF
+
+      # Configuração RLOGIN (Porta 513)
+      cat <<EOF > /etc/xinetd.d/rlogin
+      service login
+      {
+        disable = no
+        socket_type = stream
+        wait = no
+        user = root
+        server = /usr/sbin/in.rlogind
+      }
+      EOF
+      xinetd -dontfork"
+  server:
+    build: .
+    container_name: server
+    networks:
+      mitnick_net:
+        ipv4_address: 10.0.2.30
+    cap_add:
+      - NET_ADMIN
+    command: >
+      sh -c "iptables -A OUTPUT -p tcp --tcp-flags RST RST -d 10.0.2.20 -j DROP
+             && while true; do nc -lk -p 514 > /dev/null; done"
+    sysctls:
+      - net.ipv4.tcp_syncookies=0 # Isso impede o SYN Flood, caso ativo
+      - net.ipv4.ip_forward=0
+      - net.ipv4.tcp_abort_on_overflow=0
+
+networks:
+  mitnick_net:
+    driver: bridge
+    ipam:
+      config:
+      - subnet: 10.0.2.0/24
